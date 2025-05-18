@@ -10,7 +10,6 @@ from tempfile import TemporaryDirectory
 import torch
 from torchvision import transforms
 from torchvision.models import vgg19
-from torchvision.utils import save_image
 
 # Load VGG features once for style transfer
 @st.cache_resource
@@ -40,7 +39,6 @@ def tensor_to_image(tensor):
 
 # Adaptive Instance Normalization
 def adaptive_instance_normalization(content_feat, style_feat):
-    size = content_feat.size()
     content_mean, content_std = content_feat.mean([2, 3], keepdim=True), content_feat.std([2, 3], keepdim=True)
     style_mean, style_std = style_feat.mean([2, 3], keepdim=True), style_feat.std([2, 3], keepdim=True)
     normalized_feat = (content_feat - content_mean) / content_std
@@ -68,7 +66,7 @@ def apply_style_transfer(content_img, style_img, alpha=1.0):
 
     return tensor_to_image(t)
 
-# --- All other augmentation logic (same as previous script) ---
+# Augmentation functions
 def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
     ax, ay, az = math.radians(angle_x), math.radians(angle_y), math.radians(angle_z)
@@ -146,7 +144,7 @@ def apply_random_filters(img):
         temp = color_jitter(temp)
     return temp
 
-# --- Streamlit UI ---
+# Streamlit UI
 st.title("🧠 AI Image Augmentation App")
 
 style_mode = st.radio("Choose Augmentation Type", ["📱 Mobile Simulation", "🎨 Style Transfer (From Reference Image)"])
@@ -169,6 +167,7 @@ if uploaded_files and st.button("Start Augmentation"):
                 if style_mode == "📱 Mobile Simulation":
                     augmented = apply_random_filters(img)
                 elif style_mode == "🎨 Style Transfer (From Reference Image)" and reference_image:
+                    reference_image.seek(0)  # Reset pointer for repeated reads
                     ref_bytes = np.asarray(bytearray(reference_image.read()), dtype=np.uint8)
                     style_img = cv2.imdecode(ref_bytes, cv2.IMREAD_COLOR)
                     content_pil = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
