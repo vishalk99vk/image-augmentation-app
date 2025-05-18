@@ -1,99 +1,69 @@
 import streamlit as st
 import cv2
 import numpy as np
+import random
+import math
+import tempfile
 import os
-import zipfile
-from io import BytesIO
 
-# === Tint variations (BGR format for OpenCV)
-tints = {
-    "warm": (0, 30, 80),
-    "cool": (80, 30, 0),
-    'daylight': (255, 255, 240),
-    'cool_white': (220, 255, 255),
-    'warm_white': (255, 240, 200),
-}
+# Paste your existing image processing functions here, e.g.:
+# rotate_image_3d, random_crop, rotate_2d, color_jitter, sharpen_image, apply_random_filters
 
-# === Brightness levels
-brightness_factors = {
-    "dark": 0.8,
-    "normal": 1.2,
-    "bright": 1.4
-}
+# For brevity, I'll keep only apply_random_filters and helpers here
+def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
+    # Your original implementation (copy-paste here)
+    # ... (omitted here for brevity)
+    # Use your original code exactly
+    pass
 
-alpha = 0.25  # Tint blending strength
+# ... Similarly add all helper functions
 
-# === 3D tilt transformation
-def apply_3d_tilt(image, direction="left", tilt_factor=0.1):
-    h, w = image.shape[:2]
-    dx = int(w * tilt_factor)
-    dy = int(h * tilt_factor)
+def apply_random_filters(img, num_variants=10):
+    # Your original function (copy-paste)
+    pass
 
-    if direction == "left":
-        src = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
-        dst = np.float32([[dx, 0], [w, 0], [0, h], [w - dx, h]])
-    elif direction == "right":
-        src = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
-        dst = np.float32([[0, 0], [w - dx, 0], [dx, h], [w, h]])
-    elif direction == "up":
-        src = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
-        dst = np.float32([[0, dy], [w, dy], [0, h], [w, h]])
-    elif direction == "down":
-        src = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
-        dst = np.float32([[0, 0], [w, 0], [0, h - dy], [w, h - dy]])
-    else:
-        return image
+def process_single_image(img_bytes, num_variants=10):
+    # Read bytes into np array and decode
+    img_array = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    if img is None:
+        st.error("Failed to load image")
+        return []
 
-    M = cv2.getPerspectiveTransform(src, dst)
-    tilted = cv2.warpPerspective(image, M, (w, h), borderMode=cv2.BORDER_REFLECT)
-    return tilted
+    filtered_versions = apply_random_filters(img, num_variants=num_variants)
+    return filtered_versions
 
-# === Streamlit UI
-st.title("Image Brightness, Tint & 3D Tilt Generator")
+def main():
+    st.title("Image Augmentation Web App")
 
-uploaded_files = st.file_uploader("Upload image(s)", accept_multiple_files=True, type=["jpg", "jpeg", "png"])
+    st.write("Upload your client images. Optionally, upload reference images.")
 
-if uploaded_files:
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as zip_file:
+    client_files = st.file_uploader("Upload client images", accept_multiple_files=True, type=['jpg','jpeg','png'])
+    reference_files = st.file_uploader("Upload reference images (optional)", accept_multiple_files=True, type=['jpg','jpeg','png'])
 
-        for uploaded_file in uploaded_files:
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    num_variants = st.slider("Number of variants per image", min_value=1, max_value=10, value=5)
 
-            if image is None:
-                st.error(f"Failed to load image: {uploaded_file.name}")
-                continue
+    if st.button("Process Images"):
+        if not client_files:
+            st.error("Please upload at least one client image")
+            return
 
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            base_name = os.path.splitext(uploaded_file.name)[0]
+        st.info("Processing images... This may take a while.")
 
-            for brightness_label, brightness in brightness_factors.items():
-                bright_image = np.clip(image * brightness, 0, 255).astype(np.uint8)
+        for i, client_file in enumerate(client_files):
+            st.write(f"### Client Image {i+1}: {client_file.name}")
+            img_bytes = client_file.read()
 
-                for tint_label, tint_color in tints.items():
-                    tint_layer = np.full_like(bright_image, tint_color, dtype=np.uint8)
-                    tinted_image = cv2.addWeighted(bright_image, 1 - alpha, tint_layer, alpha, 0)
+            variants = process_single_image(img_bytes, num_variants=num_variants)
+            for j, variant in enumerate(variants):
+                # Convert to PNG for display/download
+                is_success, buffer = cv2.imencode(".png", variant)
+                if is_success:
+                    st.image(buffer, caption=f"Variant {j+1}", use_column_width=True)
+                    st.download_button(label=f"Download variant {j+1}",
+                                       data=buffer.tobytes(),
+                                       file_name=f"{os.path.splitext(client_file.name)[0]}_variant{j+1}.png",
+                                       mime="image/png")
 
-                    # Save original tint + brightness
-                    variant_name = f"{base_name}_{brightness_label}_{tint_label}"
-                    final_bgr = cv2.cvtColor(tinted_image, cv2.COLOR_RGB2BGR)
-                    success, buffer = cv2.imencode(".jpg", final_bgr)
-                    if success:
-                        zip_file.writestr(f"{variant_name}.jpg", buffer.tobytes())
-
-                    # === Apply 3D tilt variants
-                    for direction in ["left", "right", "up", "down"]:
-                        tilted_image = apply_3d_tilt(tinted_image, direction=direction, tilt_factor=0.1)
-                        final_bgr = cv2.cvtColor(tilted_image, cv2.COLOR_RGB2BGR)
-                        success, buffer = cv2.imencode(".jpg", final_bgr)
-                        if success:
-                            zip_file.writestr(f"{variant_name}_tilt_{direction}.jpg", buffer.tobytes())
-
-    zip_buffer.seek(0)
-    st.download_button(
-        label="Download All Processed Images as ZIP",
-        data=zip_buffer,
-        file_name="processed_images.zip",
-        mime="application/zip"
-    )
+if __name__ == "__main__":
+    main()
