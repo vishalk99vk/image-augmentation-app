@@ -75,7 +75,6 @@ def perspective_warp(img, shift=None):
     return cv2.warpPerspective(img, matrix, (w, h), borderMode=cv2.BORDER_REFLECT), shift
 
 def apply_augmentations_with_params(img, filters, params=None):
-    # params is dict to store/reuse augmentation parameters
     if params is None:
         params = {}
 
@@ -157,88 +156,90 @@ filters = st.multiselect(
     default=["3D Rotation", "2D Rotation"]
 )
 
-preview_toggle = st.checkbox("🔍 Show before/after preview")
+preview_toggle = st.checkbox("Enable Preview", True)
 
-if client_files and st.button("Run Augmentation"):
-    with TemporaryDirectory() as tempdir:
-        client_images = extract_images(client_files)
-        labels = []
+# Extract reference images
+reference_images = extract_images(ref_files) if ref_files else []
 
-        # If reference images uploaded, generate variants and store params
-        if ref_files:
-            ref_images = extract_images(ref_files)
-            if not ref_images:
-                st.error("No valid reference images found.")
-                st.stop()
+# Extract client images
+client_images = extract_images(client_files) if client_files else []
 
-            if not client_images:
-                st.error("No valid client images found.")
-                st.stop()
+if not client_images:
+    st.warning("Please upload at least one client image.")
+    st.stop()
 
-            st.info(f"Generating {num_variants_ref} variants per reference image to extract filters...")
+# Function to generate all augmented images and labels
+def generate_augmented_images():
+    all_images = []
+    all_labels = []
+    if reference_images:
+        for ref_name, ref_img in reference_images:
+            # Generate variants for reference image
+            for v in range(num_variants_ref):
+                out_img, params = apply_augmentations_with_params(ref_img.copy(), filters)
+                fname = f"{os.path.splitext(ref_name)[0]}_aug{v+1}.png"
+                all_images.append((fname, out_img))
+                label = f"Reference_{ref_name}_variant_{v+1}_params_{params}"
+                all_labels.append(label)
+        # Generate client image variants copying filters from first reference image variant params
+        # Using params from first variant of first reference image
+        if len(reference_images) > 0:
+            ref_params_list = []
+            for v in range(num_variants_ref):
+                _, params = apply_augmentations_with_params(reference_images[0][1].copy(), filters)
+                ref_params_list.append(params)
+            for client_name, client_img in client_images:
+                for i, params in enumerate(ref_params_list):
+                    out_img, _ = apply_augmentations_with_params(client_img.copy(), filters, params)
+                    fname = f"{os.path.splitext(client_name)[0]}_aug{i+1}.png"
+                    all_images.append((fname, out_img))
+                    label = f"Client_{client_name}_variant_{i+1}_copied_params"
+                    all_labels.append(label)
+    else:
+        for client_name, client_img in client_images:
+            for v in range(num_variants_client):
+                out_img, params = apply_augmentations_with_params(client_img.copy(), filters)
+                fname = f"{os.path.splitext(client_name)[0]}_aug{v+1}.png"
+                all_images.append((fname, out_img))
+                label = f"Client_{client_name}_variant_{v+1}_params_{params}"
+                all_labels.append(label)
+    return all_images, all_labels
 
-            ref_variants = []  # (variant_name, params)
-            for ref_filename, ref_img in ref_images:
-                base_ref_name = os.path.splitext(os.path.basename(ref_filename))[0]
-                for i in range(num_variants_ref):
-                    params = {}
-                    aug_ref, params = apply_augmentations_with_params(ref_img.copy(), filters, params)
-                    variant_name = f"{base_ref_name}_aug_{i}.jpg"
-                    ref_variants.append((variant_name, params))
+if st.button("Generate Augmented Images"):
+    augmented_images, labels = generate_augmented_images()
+    if len(augmented_images) == 0:
+        st.warning("No images generated.")
+        st.stop()
 
-            st.info(f"Applying {len(ref_variants)} reference variants to {len(client_images)} client images...")
-            total_count = 0
-            for client_filename, client_img in client_images:
-                base_client_name = os.path.splitext(os.path.basename(client_filename))[0]
-                for variant_name, params in ref_variants:
-                    aug_client, _ = apply_augmentations_with_params(client_img.copy(), filters, params)
-                    out_name = f"{base_client_name}_{variant_name}"
-                    out_path = os.path.join(tempdir, out_name)
-                    cv2.imwrite(out_path, aug_client)
-                    labels.append(out_name)
-                    total_count += 1
+    # Preview
+    if preview_toggle:
+        st.subheader("Preview Augmented Images")
+        cols = st.columns(3)
+        for i, (fname, img) in enumerate(augmented_images):
+            with cols[i % 3]:
+                st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=fname, use_column_width=True)
 
-                    if preview_toggle and total_count <= 10:
-                        st.write(f"**Preview:** {base_client_name} with {variant_name}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.image(cv2.cvtColor(client_img, cv2.COLOR_BGR2RGB), caption="Original Client Image", use_column_width=True)
-                        with col2:
-                            st.image(cv2.cvtColor(aug_client, cv2.COLOR_BGR2RGB), caption="Augmented Client Image", use_column_width=True)
+    # Prepare ZIP in memory
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zipf:
+        for fname, img in augmented_images:
+            _, encimg = cv2.imencode('.png', img)
+            zipf.writestr(fname, encimg.tobytes())
 
-            st.success(f"Generated {total_count} augmented client images using reference filters.")
+    zip_buffer.seek(0)
+    st.download_button(
+        label="Download Augmented Images ZIP",
+        data=zip_buffer,
+        file_name="augmented_images.zip",
+        mime="application/zip"
+    )
 
-        else:
-            # No reference images, just generate variants per client image with random params
-            total_count = 0
-            for client_filename, client_img in client_images:
-                base_client_name = os.path.splitext(os.path.basename(client_filename))[0]
-                for i in range(num_variants_client):
-                    aug_img, _ = apply_augmentations_with_params(client_img.copy(), filters)
-                    out_name = f"{base_client_name}_aug_{i}.jpg"
-                    out_path = os.path.join(tempdir, out_name)
-                    cv2.imwrite(out_path, aug_img)
-                    labels.append(out_name)
-                    total_count += 1
-
-                    if preview_toggle and total_count <= 10:
-                        st.write(f"**Preview:** {out_name}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.image(cv2.cvtColor(client_img, cv2.COLOR_BGR2RGB), caption="Original", use_column_width=True)
-                        with col2:
-                            st.image(cv2.cvtColor(aug_img, cv2.COLOR_BGR2RGB), caption="Augmented", use_column_width=True)
-
-            st.success(f"Generated {total_count} augmented client images.")
-
-        # ZIP download of results
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w") as zipf:
-            for file in os.listdir(tempdir):
-                zipf.write(os.path.join(tempdir, file), arcname=file)
-        zip_buffer.seek(0)
-        st.download_button("⬇️ Download Augmented Images ZIP", data=zip_buffer, file_name="augmented_images.zip")
-
-else:
-    st.info("Upload client images and optionally reference images, then click 'Run Augmentation'.")
-
+    # Create and provide CSV labels download
+    df_labels = pd.DataFrame({"filename": [fname for fname, _ in augmented_images], "label": labels})
+    csv_buffer = df_labels.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="Download Labels CSV",
+        data=csv_buffer,
+        file_name="labels.csv",
+        mime="text/csv"
+    )
