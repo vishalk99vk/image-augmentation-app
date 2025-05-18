@@ -8,6 +8,7 @@ import zipfile
 from io import BytesIO
 from tempfile import TemporaryDirectory
 
+# --- 3D Rotation ---
 def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
     ax = math.radians(angle_x)
@@ -52,18 +53,18 @@ def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
 
     return warped
 
+# --- Random Crop ---
 def random_crop(img, crop_scale=(0.7, 0.95)):
     h, w = img.shape[:2]
     scale = random.uniform(*crop_scale)
     new_h, new_w = int(h * scale), int(w * scale)
-
     top = random.randint(0, h - new_h)
     left = random.randint(0, w - new_w)
-
     cropped = img[top:top + new_h, left:left + new_w]
     resized = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
     return resized
 
+# --- 2D Rotation ---
 def rotate_2d(img, angle=None):
     if angle is None:
         angle = random.uniform(-10, 10)
@@ -73,6 +74,7 @@ def rotate_2d(img, angle=None):
     rotated = cv2.warpAffine(img, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     return rotated
 
+# --- Color Jitter ---
 def color_jitter(img):
     img = img.astype(np.float32)
 
@@ -99,6 +101,7 @@ def color_jitter(img):
 
     return img.astype(np.uint8)
 
+# --- Sharpen ---
 def sharpen_image(img):
     kernel = np.array([[0, -1, 0],
                        [-1, 5,-1],
@@ -106,6 +109,7 @@ def sharpen_image(img):
     sharpened = cv2.filter2D(img, -1, kernel)
     return sharpened
 
+# --- Full Augmentation ---
 def apply_random_filters(img):
     temp = img.copy()
 
@@ -122,10 +126,7 @@ def apply_random_filters(img):
         temp = np.clip(temp, 0, 255).astype(np.uint8)
 
     if random.random() < 0.5:
-        angle_x = random.uniform(-10, 10)
-        angle_y = random.uniform(-10, 10)
-        angle_z = random.uniform(-10, 10)
-        temp = rotate_image_3d(temp, angle_x, angle_y, angle_z)
+        temp = rotate_image_3d(temp, random.uniform(-10, 10), random.uniform(-10, 10), random.uniform(-10, 10))
 
     if random.random() < 0.5:
         temp = rotate_2d(temp)
@@ -158,10 +159,11 @@ def apply_random_filters(img):
 
     return temp
 
-st.title("Image Augmentation App")
+# --- Streamlit UI ---
+st.title("📸 Image Augmentation App")
 
 uploaded_files = st.file_uploader(
-    "Upload Images (jpg, png)", 
+    "Upload one or more images (JPG or PNG)", 
     type=["jpg", "jpeg", "png"], 
     accept_multiple_files=True
 )
@@ -175,7 +177,7 @@ if uploaded_files:
                 file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
                 img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                 if img is None:
-                    st.error(f"Could not read image {uploaded_file.name}")
+                    st.error(f"❌ Could not read image: {uploaded_file.name}")
                     continue
                 base_name = os.path.splitext(uploaded_file.name)[0]
 
@@ -184,9 +186,9 @@ if uploaded_files:
                     out_path = os.path.join(output_folder, f"{base_name}_aug_{i}.jpg")
                     cv2.imwrite(out_path, augmented)
 
-            st.success(f"Augmentation completed for {len(uploaded_files)} images!")
+            st.success(f"✅ Augmentation complete for {len(uploaded_files)} image(s)!")
 
-            # ZIP all augmented images for download
+            # ZIP all images for download
             zip_buffer = BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zip_file:
                 for file_name in os.listdir(output_folder):
@@ -194,10 +196,10 @@ if uploaded_files:
             zip_buffer.seek(0)
 
             st.download_button(
-                label="Download All Augmented Images (ZIP)",
+                label="📥 Download All Augmented Images (ZIP)",
                 data=zip_buffer,
                 file_name="augmented_images.zip",
                 mime="application/zip"
             )
 else:
-    st.info("Please upload one or more images to begin augmentation.")
+    st.info("📂 Please upload one or more images to begin augmentation.")
