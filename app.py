@@ -9,9 +9,9 @@ import pandas as pd
 from io import BytesIO
 from tempfile import TemporaryDirectory
 
-# --- Your existing filter functions here (unchanged) ---
+# --- Filter Functions ---
 
-def rotate_image_3d_with_params(img, angle_x, angle_y, angle_z):
+def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
     ax = math.radians(angle_x)
     ay = math.radians(angle_y)
@@ -32,22 +32,37 @@ def rotate_image_3d_with_params(img, angle_x, angle_y, angle_z):
     matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
     return cv2.warpPerspective(img, matrix, (w, h), borderMode=cv2.BORDER_REPLICATE)
 
-def rotate_2d_with_params(img, angle):
+def rotate_2d(img, angle=None):
+    if angle is None:
+        angle = random.uniform(-10, 10)
     h, w = img.shape[:2]
     M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1)
     return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
-def random_crop_with_params(img, top, left, new_h, new_w):
+def random_crop(img, scale=None, top=None, left=None):
     h, w = img.shape[:2]
-    cropped = img[top:top + new_h, left:left + new_w]
-    return cv2.resize(cropped, (w, h))
+    if scale is None:
+        scale = random.uniform(0.7, 0.95)
+    new_h, new_w = int(h * scale), int(w * scale)
+    if top is None:
+        top = random.randint(0, h - new_h)
+    if left is None:
+        left = random.randint(0, w - new_w)
+    return cv2.resize(img[top:top + new_h, left:left + new_w], (w, h))
 
-def color_jitter_with_params(img, brightness_factor, hue_shift, saturation_factor):
+def color_jitter(img, brightness_factor=None, hue_shift=None, saturation_factor=None):
     img = img.astype(np.float32)
-    img *= brightness_factor
+    if brightness_factor is None:
+        brightness_factor = random.uniform(0.8, 1.2)
+    if random.random() < 0.5:
+        img *= brightness_factor
     img = np.clip(img, 0, 255)
     hsv = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
+    if saturation_factor is None:
+        saturation_factor = random.uniform(0.7, 1.3)
     hsv[..., 1] *= saturation_factor
+    if hue_shift is None:
+        hue_shift = random.uniform(-10, 10)
     hsv[..., 0] += hue_shift
     hsv[..., 1:] = np.clip(hsv[..., 1:], 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
@@ -56,12 +71,75 @@ def sharpen_image(img):
     kernel = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
     return cv2.filter2D(img, -1, kernel)
 
-def perspective_warp_with_params(img, shift):
+def perspective_warp(img, shift=None):
     h, w = img.shape[:2]
+    if shift is None:
+        shift = random.randint(5, 20)
     src_pts = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
     dst_pts = np.float32([[shift, 0], [w - shift, 0], [0, h], [w, h]])
     matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
     return cv2.warpPerspective(img, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
+
+# Apply filters with optional parameters (for copying)
+def apply_augmentations_with_params(img, filters, params=None):
+    # params is dict of filter_name: parameters used in that filter to reproduce augmentation
+    if params is None:
+        params = {}
+
+    if '3D Rotation' in filters:
+        p = params.get('3D Rotation')
+        if p is None:
+            angles = (random.uniform(-10, 10), random.uniform(-10, 10), random.uniform(-10, 10))
+        else:
+            angles = p
+        img = rotate_image_3d(img, *angles)
+        params['3D Rotation'] = angles
+
+    if '2D Rotation' in filters:
+        p = params.get('2D Rotation')
+        if p is None:
+            angle = random.uniform(-10, 10)
+        else:
+            angle = p
+        img = rotate_2d(img, angle)
+        params['2D Rotation'] = angle
+
+    if 'Random Crop' in filters:
+        p = params.get('Random Crop')
+        if p is None:
+            scale = random.uniform(0.7, 0.95)
+            top = None
+            left = None
+        else:
+            scale, top, left = p
+        img = random_crop(img, scale, top, left)
+        params['Random Crop'] = (scale, top, left)
+
+    if 'Color Jitter' in filters:
+        p = params.get('Color Jitter')
+        if p is None:
+            brightness_factor = random.uniform(0.8, 1.2)
+            hue_shift = random.uniform(-10, 10)
+            saturation_factor = random.uniform(0.7, 1.3)
+        else:
+            brightness_factor, hue_shift, saturation_factor = p
+        img = color_jitter(img, brightness_factor, hue_shift, saturation_factor)
+        params['Color Jitter'] = (brightness_factor, hue_shift, saturation_factor)
+
+    if 'Sharpen' in filters:
+        # Sharpen has no params
+        img = sharpen_image(img)
+
+    if 'Perspective Warp' in filters:
+        p = params.get('Perspective Warp')
+        if p is None:
+            shift = random.randint(5, 20)
+        else:
+            shift = p
+        img = perspective_warp(img, shift)
+        params['Perspective Warp'] = shift
+
+    return img, params
 
 def extract_images(files):
     images = []
@@ -82,141 +160,96 @@ def extract_images(files):
                 images.append((uploaded_file.name, img))
     return images
 
-# --- Generate random filter parameters for each filter ---
-def generate_random_params_for_filters(filters, img_shape):
-    h, w = img_shape[:2]
-    params = {}
-    if "3D Rotation" in filters:
-        params['3D Rotation'] = {
-            'angle_x': random.uniform(-10, 10),
-            'angle_y': random.uniform(-10, 10),
-            'angle_z': random.uniform(-10, 10),
-        }
-    if "2D Rotation" in filters:
-        params['2D Rotation'] = {
-            'angle': random.uniform(-10, 10)
-        }
-    if "Random Crop" in filters:
-        scale = random.uniform(0.7, 0.95)
-        new_h, new_w = int(h * scale), int(w * scale)
-        top = random.randint(0, h - new_h)
-        left = random.randint(0, w - new_w)
-        params['Random Crop'] = {
-            'top': top,
-            'left': left,
-            'new_h': new_h,
-            'new_w': new_w
-        }
-    if "Color Jitter" in filters:
-        params['Color Jitter'] = {
-            'brightness_factor': random.uniform(0.8, 1.2),
-            'hue_shift': random.uniform(-10, 10),
-            'saturation_factor': random.uniform(0.7, 1.3)
-        }
-    if "Sharpen" in filters:
-        # No params for sharpen
-        params['Sharpen'] = {}
-    if "Perspective Warp" in filters:
-        params['Perspective Warp'] = {
-            'shift': random.randint(5, 20)
-        }
-    return params
-
-# --- Apply augmentations with fixed parameters ---
-def apply_augmentations_with_params(img, filter_params):
-    for filter_name, params in filter_params.items():
-        if filter_name == "3D Rotation":
-            img = rotate_image_3d_with_params(img, params['angle_x'], params['angle_y'], params['angle_z'])
-        elif filter_name == "2D Rotation":
-            img = rotate_2d_with_params(img, params['angle'])
-        elif filter_name == "Random Crop":
-            img = random_crop_with_params(img, params['top'], params['left'], params['new_h'], params['new_w'])
-        elif filter_name == "Color Jitter":
-            img = color_jitter_with_params(img, params['brightness_factor'], params['hue_shift'], params['saturation_factor'])
-        elif filter_name == "Sharpen":
-            img = sharpen_image(img)
-        elif filter_name == "Perspective Warp":
-            img = perspective_warp_with_params(img, params['shift'])
-    return img
-
-
 # --- Streamlit App ---
+st.set_page_config(page_title="Image Augmentation Tool", layout="centered")
+st.title("🧪 Augmentation with Preview + Auto-Labeling + Reference Filters")
 
-st.set_page_config(page_title="Image Augmentation with Reference Filters", layout="centered")
-st.title("🧪 Augmentation with Reference Filters")
+uploaded_ref_files = st.file_uploader("Upload reference images (optional)", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
+uploaded_client_files = st.file_uploader("Upload client images", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
 
-st.markdown("### Step 1: Upload Reference Images (Optional)")
-reference_files = st.file_uploader("Upload Reference images or ZIP", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
-
-st.markdown("### Step 2: Upload Client Images")
-client_files = st.file_uploader("Upload Client images or ZIP", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
-
-filters = st.multiselect("Select Filters (applied to reference images)", ["3D Rotation", "2D Rotation", "Random Crop", "Color Jitter", "Sharpen", "Perspective Warp"], default=["3D Rotation", "2D Rotation"])
-
-num_variants = st.slider("Number of Variants per Reference Image (if no reference images uploaded, applies random params)", 1, 5, 1)
+num_variants_ref = st.slider("Number of Variants per Reference Image", 1, 10, 3)
+filters = st.multiselect("Select Filters", ["3D Rotation", "2D Rotation", "Random Crop", "Color Jitter", "Sharpen", "Perspective Warp"], default=["3D Rotation", "2D Rotation"])
 preview_toggle = st.checkbox("🔍 Show before/after preview")
 
-if client_files and st.button("Run Augmentation"):
+if uploaded_client_files and st.button("Run Augmentation"):
     with TemporaryDirectory() as tempdir:
-        client_images = extract_images(client_files)
-        if not client_images:
-            st.error("No valid client images found.")
-            st.stop()
-
-        # Prepare reference filter params list
-        reference_filter_params_list = []
-
-        if reference_files:
-            ref_images = extract_images(reference_files)
-            if not ref_images:
-                st.warning("No valid reference images found. Using random params.")
-            else:
-                # For each reference image generate random filter params once
-                for ref_name, ref_img in ref_images:
-                    params = generate_random_params_for_filters(filters, ref_img.shape)
-                    reference_filter_params_list.append((ref_name, params))
-        else:
-            # No reference images, generate N variants of random params
-            for i in range(num_variants):
-                dummy_shape = client_images[0][1].shape
-                params = generate_random_params_for_filters(filters, dummy_shape)
-                reference_filter_params_list.append((f"variant_{i}", params))
+        client_images = extract_images(uploaded_client_files)
+        ref_images = extract_images(uploaded_ref_files) if uploaded_ref_files else []
 
         labels = []
-        count = 0
 
-        for ref_name, filter_params in reference_filter_params_list:
-            for client_name, client_img in client_images:
-                aug_img = apply_augmentations_with_params(client_img.copy(), filter_params)
-                base_name = os.path.splitext(client_name)[0]
-                out_name = f"{base_name}_aug_from_{os.path.splitext(ref_name)[0]}.jpg"
-                out_path = os.path.join(tempdir, out_name)
-                cv2.imwrite(out_path, aug_img)
-                label = base_name.split("_")[0]
-                labels.append((out_name, label))
-                count += 1
+        if not client_images:
+            st.error("No valid client images found.")
+        else:
+            # If no ref images, just apply filters directly on client images
+            if not ref_images:
+                st.info("No reference images uploaded, applying filters directly on client images.")
 
-                if preview_toggle and count == 1:
-                    st.markdown(f"**Preview of Augmentation from Reference '{ref_name}' applied on Client '{client_name}'**")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.image(cv2.cvtColor(client_img, cv2.COLOR_BGR2RGB), caption="Original Client Image", use_column_width=True)
-                    with col2:
-                        st.image(cv2.cvtColor(aug_img, cv2.COLOR_BGR2RGB), caption=f"Augmented Client Image\n(Ref: {ref_name})", use_column_width=True)
+                for filename, img in client_images:
+                    base_name = os.path.splitext(os.path.basename(filename))[0]
+                    for i in range(num_variants_ref):
+                        aug, _ = apply_augmentations_with_params(img.copy(), filters, params=None)
+                        new_name = f"{base_name}_aug_{i}.jpg"
+                        out_path = os.path.join(tempdir, new_name)
+                        cv2.imwrite(out_path, aug)
+                        label = base_name.split("_")[0]
+                        labels.append((new_name, label))
 
-        # Save labels.csv
-        df = pd.DataFrame(labels, columns=["filename", "label"])
-        label_path = os.path.join(tempdir, "labels.csv")
-        df.to_csv(label_path, index=False)
+                        if preview_toggle and i == 0:
+                            st.markdown(f"**Original vs Augmented → `{filename}`**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="Original", use_column_width=True)
+                            with col2:
+                                st.image(cv2.cvtColor(aug, cv2.COLOR_BGR2RGB), caption="Augmented", use_column_width=True)
 
-        # Create ZIP
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w") as zipf:
-            for file in os.listdir(tempdir):
-                zipf.write(os.path.join(tempdir, file), arcname=file)
-        zip_buffer.seek(0)
+            else:
+                # For each ref image, create variants + store their params (filters + params)
+                ref_variants = []  # List of (ref_name, variant_img, params)
+                for ref_filename, ref_img in ref_images:
+                    base_ref_name = os.path.splitext(os.path.basename(ref_filename))[0]
+                    for i in range(num_variants_ref):
+                        params = {}
+                        aug_ref, params = apply_augmentations_with_params(ref_img.copy(), filters, params)
+                        variant_name = f"{base_ref_name}_aug_{i}.jpg"
+                        ref_variants.append((variant_name, params))
 
-        st.success(f"✅ Generated {count} augmented images (client images x reference filter sets).")
-        st.download_button("📦 Download Augmented Images + Labels", data=zip_buffer, file_name="augmented_dataset.zip", mime="application/zip")
+                total_count = 0
+                # Now apply each ref variant's filters & params on each client image
+                for client_filename, client_img in client_images:
+                    base_client_name = os.path.splitext(os.path.basename(client_filename))[0]
+                    for variant_name, params in ref_variants:
+                        aug_client, _ = apply_augmentations_with_params(client_img.copy(), filters, params)
+                        new_name = f"{base_client_name}_ref_{variant_name}"
+                        out_path = os.path.join(tempdir, new_name)
+                        cv2.imwrite(out_path, aug_client)
+                        label = base_client_name.split("_")[0]
+                        labels.append((new_name, label))
+                        total_count += 1
+
+                        # Show preview for first client image and first variant only
+                        if preview_toggle and total_count == 1:
+                            st.markdown(f"**Original Client Image vs Augmented Client Image**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.image(cv2.cvtColor(client_img, cv2.COLOR_BGR2RGB), caption=f"Original {client_filename}", use_column_width=True)
+                            with col2:
+                                st.image(cv2.cvtColor(aug_client, cv2.COLOR_BGR2RGB), caption=f"Augmented {new_name}", use_column_width=True)
+
+                st.success(f"✅ Generated {total_count} augmented images from {len(client_images)} client images and {len(ref_images)} reference image variants.")
+
+            # Save labels.csv
+            df = pd.DataFrame(labels, columns=["filename", "label"])
+            label_path = os.path.join(tempdir, "labels.csv")
+            df.to_csv(label_path, index=False)
+
+            # Create ZIP
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zipf:
+                for file in os.listdir(tempdir):
+                    zipf.write(os.path.join(tempdir, file), arcname=file)
+            zip_buffer.seek(0)
+
+            st.download_button("📦 Download Augmented Images + Labels", data=zip_buffer, file_name="augmented_dataset.zip", mime="application/zip")
 else:
-    st.info("📂 Upload client images and optionally reference images, then select filters to begin.")
+    st.info("📂 Upload client images and optionally reference images, select filters to begin.")
