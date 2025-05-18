@@ -5,6 +5,7 @@ import numpy as np
 import random
 import math
 import zipfile
+import pandas as pd
 from io import BytesIO
 from tempfile import TemporaryDirectory
 
@@ -17,15 +18,9 @@ def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     az = math.radians(angle_z)
     f = w
     cx, cy = w / 2, h / 2
-    Rx = np.array([[1, 0, 0],
-                   [0, math.cos(ax), -math.sin(ax)],
-                   [0, math.sin(ax), math.cos(ax)]])
-    Ry = np.array([[math.cos(ay), 0, math.sin(ay)],
-                   [0, 1, 0],
-                   [-math.sin(ay), 0, math.cos(ay)]])
-    Rz = np.array([[math.cos(az), -math.sin(az), 0],
-                   [math.sin(az), math.cos(az), 0],
-                   [0, 0, 1]])
+    Rx = np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+    Ry = np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]])
+    Rz = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]])
     R = Rz @ Ry @ Rx
     corners = np.array([[-cx, -cy, 0], [w - cx, -cy, 0], [-cx, h - cy, 0], [w - cx, h - cy, 0]])
     rotated = corners @ R.T
@@ -54,8 +49,7 @@ def random_crop(img):
 def color_jitter(img):
     img = img.astype(np.float32)
     if random.random() < 0.5:
-        factor = random.uniform(0.8, 1.2)
-        img *= factor
+        img *= random.uniform(0.8, 1.2)
     img = np.clip(img, 0, 255)
     hsv = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
     hsv[..., 1] *= random.uniform(0.7, 1.3)
@@ -64,9 +58,7 @@ def color_jitter(img):
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 def sharpen_image(img):
-    kernel = np.array([[0, -1, 0],
-                       [-1, 5,-1],
-                       [0, -1, 0]])
+    kernel = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
     return cv2.filter2D(img, -1, kernel)
 
 def perspective_warp(img):
@@ -77,7 +69,6 @@ def perspective_warp(img):
     matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
     return cv2.warpPerspective(img, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
 
-# --- Main Augmentation Pipeline ---
 def apply_augmentations(img, filters):
     if '3D Rotation' in filters:
         img = rotate_image_3d(img, random.uniform(-10, 10), random.uniform(-10, 10), random.uniform(-10, 10))
@@ -93,7 +84,6 @@ def apply_augmentations(img, filters):
         img = perspective_warp(img)
     return img
 
-# --- Load ZIP or Individual Images ---
 def extract_images(files):
     images = []
     for uploaded_file in files:
@@ -113,34 +103,50 @@ def extract_images(files):
                 images.append((uploaded_file.name, img))
     return images
 
-# --- Streamlit Interface ---
-st.set_page_config(page_title="Augmentation App", layout="centered")
-st.title("📸 Image Augmentation App")
+# --- Streamlit App ---
+st.set_page_config(page_title="Image Augmentation Tool", layout="centered")
+st.title("🧪 Augmentation with Preview + Auto-Labeling")
 
-uploaded_files = st.file_uploader("Upload images or a ZIP file", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
-
+uploaded_files = st.file_uploader("Upload images or ZIP", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
 num_variants = st.slider("Number of Variants per Image", 1, 20, 5)
 
-filters = st.multiselect(
-    "Choose Filters to Apply",
-    options=["3D Rotation", "2D Rotation", "Random Crop", "Color Jitter", "Sharpen", "Perspective Warp"],
-    default=["3D Rotation", "2D Rotation"]
-)
+filters = st.multiselect("Select Filters", ["3D Rotation", "2D Rotation", "Random Crop", "Color Jitter", "Sharpen", "Perspective Warp"], default=["3D Rotation", "2D Rotation"])
+preview_toggle = st.checkbox("🔍 Show before/after preview")
 
-if uploaded_files and st.button("Generate Augmented Images"):
+if uploaded_files and st.button("Run Augmentation"):
     with TemporaryDirectory() as tempdir:
         images = extract_images(uploaded_files)
+        labels = []
 
         if not images:
-            st.error("No valid images found!")
+            st.error("No valid images found.")
         else:
             for filename, img in images:
+                label = os.path.splitext(os.path.basename(filename))[0].split("_")[0]
                 base_name = os.path.splitext(os.path.basename(filename))[0]
+
                 for i in range(num_variants):
                     aug = apply_augmentations(img.copy(), filters)
-                    out_path = os.path.join(tempdir, f"{base_name}_aug_{i}.jpg")
+                    new_name = f"{base_name}_aug_{i}.jpg"
+                    out_path = os.path.join(tempdir, new_name)
                     cv2.imwrite(out_path, aug)
+                    labels.append((new_name, label))
 
+                    # Show preview (first image and first variant only)
+                    if preview_toggle and i == 0:
+                        st.markdown(f"**Original vs Augmented → `{filename}`**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="Original", use_column_width=True)
+                        with col2:
+                            st.image(cv2.cvtColor(aug, cv2.COLOR_BGR2RGB), caption="Augmented", use_column_width=True)
+
+            # Save labels.csv
+            df = pd.DataFrame(labels, columns=["filename", "label"])
+            label_path = os.path.join(tempdir, "labels.csv")
+            df.to_csv(label_path, index=False)
+
+            # Create ZIP
             zip_buffer = BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zipf:
                 for file in os.listdir(tempdir):
@@ -148,6 +154,6 @@ if uploaded_files and st.button("Generate Augmented Images"):
             zip_buffer.seek(0)
 
             st.success(f"✅ Generated {num_variants} variant(s) per image.")
-            st.download_button("📥 Download All as ZIP", data=zip_buffer, file_name="augmented_images.zip", mime="application/zip")
+            st.download_button("📦 Download Augmented Images + Labels", data=zip_buffer, file_name="augmented_dataset.zip", mime="application/zip")
 else:
-    st.info("📂 Upload images or a zip file and select filters to begin.")
+    st.info("📂 Upload images and select filters to begin.")
