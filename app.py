@@ -1,13 +1,13 @@
+import streamlit as st
 import os
 import cv2
 import numpy as np
 import random
 import math
-import streamlit as st
-from PIL import Image
+import zipfile
 from io import BytesIO
+from tempfile import TemporaryDirectory
 
-# Your augmentation functions unchanged
 def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
     ax = math.radians(angle_x)
@@ -158,48 +158,46 @@ def apply_random_filters(img):
 
     return temp
 
-# Streamlit UI and logic
-def main():
-    st.title("Image Augmentation App")
+st.title("Image Augmentation App")
 
-    uploaded_files = st.file_uploader("Upload Images", accept_multiple_files=True, type=["jpg", "jpeg", "png"])
-    num_variants = st.slider("Number of Variants per Image", min_value=1, max_value=20, value=5)
+uploaded_files = st.file_uploader(
+    "Upload Images (jpg, png)", 
+    type=["jpg", "jpeg", "png"], 
+    accept_multiple_files=True
+)
 
-    if uploaded_files and st.button("Augment Images"):
-        output_folder = "augmented_images"
-        os.makedirs(output_folder, exist_ok=True)
+num_variants = st.slider("Number of Augmented Variants per Image", 1, 20, 5)
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+if uploaded_files:
+    with TemporaryDirectory() as output_folder:
+        if st.button("Augment Images"):
+            for uploaded_file in uploaded_files:
+                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if img is None:
+                    st.error(f"Could not read image {uploaded_file.name}")
+                    continue
+                base_name = os.path.splitext(uploaded_file.name)[0]
 
-        for idx, uploaded_file in enumerate(uploaded_files):
-            image_bytes = uploaded_file.read()
-            npimg = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+                for i in range(num_variants):
+                    augmented = apply_random_filters(img)
+                    out_path = os.path.join(output_folder, f"{base_name}_aug_{i}.jpg")
+                    cv2.imwrite(out_path, augmented)
 
-            if img is None:
-                st.warning(f"Failed to load image {uploaded_file.name}")
-                continue
+            st.success(f"Augmentation completed for {len(uploaded_files)} images!")
 
-            base_name = os.path.splitext(uploaded_file.name)[0]
+            # ZIP all augmented images for download
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+                for file_name in os.listdir(output_folder):
+                    zip_file.write(os.path.join(output_folder, file_name), arcname=file_name)
+            zip_buffer.seek(0)
 
-            for i in range(num_variants):
-                augmented = apply_random_filters(img)
-                save_path = os.path.join(output_folder, f"{base_name}_aug_{i}.jpg")
-                cv2.imwrite(save_path, augmented)
-
-            status_text.text(f"Processed {idx + 1}/{len(uploaded_files)}: {uploaded_file.name}")
-            progress_bar.progress((idx + 1) / len(uploaded_files))
-
-        st.success(f"Augmentation completed! Images saved to '{output_folder}' folder.")
-
-        # Optionally, list the augmented images with download links
-        st.subheader("Augmented Images Preview:")
-        for file_name in os.listdir(output_folder):
-            if file_name.lower().endswith((".jpg", ".jpeg", ".png")):
-                img_path = os.path.join(output_folder, file_name)
-                image = Image.open(img_path)
-                st.image(image, caption=file_name, use_column_width=True)
-
-if __name__ == "__main__":
-    main()
+            st.download_button(
+                label="Download All Augmented Images (ZIP)",
+                data=zip_buffer,
+                file_name="augmented_images.zip",
+                mime="application/zip"
+            )
+else:
+    st.info("Please upload one or more images to begin augmentation.")
