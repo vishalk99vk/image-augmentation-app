@@ -3,10 +3,11 @@ import cv2
 import numpy as np
 import random
 import math
-import argparse
-from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
+import streamlit as st
+from PIL import Image
+from io import BytesIO
 
+# Your augmentation functions unchanged
 def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
     ax = math.radians(angle_x)
@@ -108,44 +109,36 @@ def sharpen_image(img):
 def apply_random_filters(img):
     temp = img.copy()
 
-    # Brightness & contrast
     alpha = random.uniform(0.9, 1.1)
     beta = random.randint(-10, 10)
     temp = cv2.convertScaleAbs(temp, alpha=alpha, beta=beta)
 
-    # Blur
     if random.random() < 0.3:
         temp = cv2.GaussianBlur(temp, (5, 5), 0)
 
-    # Noise
     if random.random() < 0.2:
         noise = np.random.normal(0, 5, temp.shape).astype(np.int16)
         temp = temp.astype(np.int16) + noise
         temp = np.clip(temp, 0, 255).astype(np.uint8)
 
-    # 3D rotation
     if random.random() < 0.5:
         angle_x = random.uniform(-10, 10)
         angle_y = random.uniform(-10, 10)
         angle_z = random.uniform(-10, 10)
         temp = rotate_image_3d(temp, angle_x, angle_y, angle_z)
 
-    # 2D rotation
     if random.random() < 0.5:
         temp = rotate_2d(temp)
 
-    # Random crop
     if random.random() < 0.4:
         temp = random_crop(temp)
 
-    # Saturation adjustment
     if random.random() < 0.3:
         hsv = cv2.cvtColor(temp, cv2.COLOR_BGR2HSV).astype(np.float32)
         hsv[..., 1] *= random.uniform(0.85, 1.15)
         hsv[..., 1] = np.clip(hsv[..., 1], 0, 255)
         temp = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
-    # Perspective transform
     if random.random() < 0.3:
         h, w = temp.shape[:2]
         shift = random.randint(5, 20)
@@ -157,59 +150,56 @@ def apply_random_filters(img):
         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
         temp = cv2.warpPerspective(temp, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
 
-    # Color jitter
     if random.random() < 0.4:
         temp = color_jitter(temp)
 
-    # Sharpen
     if random.random() < 0.3:
         temp = sharpen_image(temp)
 
     return temp
 
-def process_image(args):
-    img_path, output_folder, num_variants = args
-    try:
-        img = cv2.imread(img_path)
-        if img is None:
-            return f"Failed to load image: {img_path}"
-
-        base_name = os.path.splitext(os.path.basename(img_path))[0]
-        for i in range(num_variants):
-            augmented = apply_random_filters(img)
-            out_path = os.path.join(output_folder, f"{base_name}_aug_{i}.jpg")
-            cv2.imwrite(out_path, augmented)
-
-        return f"Processed {img_path} with {num_variants} variants."
-
-    except Exception as e:
-        return f"Error processing {img_path}: {e}"
-
+# Streamlit UI and logic
 def main():
-    parser = argparse.ArgumentParser(description="Image augmentation tool.")
-    parser.add_argument("--input_folder", type=str, required=True, help="Path to input image folder.")
-    parser.add_argument("--output_folder", type=str, required=True, help="Path to save augmented images.")
-    parser.add_argument("--num_variants", type=int, default=10, help="Number of variants per image.")
+    st.title("Image Augmentation App")
 
-    args = parser.parse_args()
+    uploaded_files = st.file_uploader("Upload Images", accept_multiple_files=True, type=["jpg", "jpeg", "png"])
+    num_variants = st.slider("Number of Variants per Image", min_value=1, max_value=20, value=5)
 
-    os.makedirs(args.output_folder, exist_ok=True)
+    if uploaded_files and st.button("Augment Images"):
+        output_folder = "augmented_images"
+        os.makedirs(output_folder, exist_ok=True)
 
-    image_files = [os.path.join(args.input_folder, f)
-                   for f in os.listdir(args.input_folder)
-                   if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-    if not image_files:
-        print("No images found in input folder.")
-        return
+        for idx, uploaded_file in enumerate(uploaded_files):
+            image_bytes = uploaded_file.read()
+            npimg = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
 
-    print(f"Found {len(image_files)} images. Generating {args.num_variants} variants each...")
+            if img is None:
+                st.warning(f"Failed to load image {uploaded_file.name}")
+                continue
 
-    tasks = [(img_path, args.output_folder, args.num_variants) for img_path in image_files]
+            base_name = os.path.splitext(uploaded_file.name)[0]
 
-    with Pool(cpu_count()) as pool:
-        for result in tqdm(pool.imap_unordered(process_image, tasks), total=len(tasks)):
-            print(result)
+            for i in range(num_variants):
+                augmented = apply_random_filters(img)
+                save_path = os.path.join(output_folder, f"{base_name}_aug_{i}.jpg")
+                cv2.imwrite(save_path, augmented)
+
+            status_text.text(f"Processed {idx + 1}/{len(uploaded_files)}: {uploaded_file.name}")
+            progress_bar.progress((idx + 1) / len(uploaded_files))
+
+        st.success(f"Augmentation completed! Images saved to '{output_folder}' folder.")
+
+        # Optionally, list the augmented images with download links
+        st.subheader("Augmented Images Preview:")
+        for file_name in os.listdir(output_folder):
+            if file_name.lower().endswith((".jpg", ".jpeg", ".png")):
+                img_path = os.path.join(output_folder, file_name)
+                image = Image.open(img_path)
+                st.image(image, caption=file_name, use_column_width=True)
 
 if __name__ == "__main__":
     main()
