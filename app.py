@@ -4,10 +4,10 @@ import numpy as np
 import random
 import math
 import streamlit as st
-from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
-
-# Your existing augmentation functions (rotate_image_3d, random_crop, rotate_2d, color_jitter, sharpen_image, apply_random_filters) remain the same
+from multiprocessing import Pool, cpu_count
+import zipfile
+import io
 
 def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
@@ -15,7 +15,7 @@ def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     ay = math.radians(angle_y)
     az = math.radians(angle_z)
 
-    f = w  # focal length
+    f = w  # focal length (can be tweaked)
     cx, cy = w / 2, h / 2
 
     Rx = np.array([[1, 0, 0],
@@ -67,7 +67,7 @@ def random_crop(img, crop_scale=(0.7, 0.95)):
 
 def rotate_2d(img, angle=None):
     if angle is None:
-        angle = random.uniform(-10, 10)
+        angle = random.uniform(-10, 10)  # Angle restricted between -10 and +10
     h, w = img.shape[:2]
     center = (w // 2, h // 2)
     matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
@@ -113,36 +113,44 @@ def apply_random_filters(img, num_variants=10):
     for _ in range(num_variants):
         temp = img.copy()
 
+        # Brightness & contrast
         alpha = random.uniform(0.9, 1.1)
         beta = random.randint(-10, 10)
         temp = cv2.convertScaleAbs(temp, alpha=alpha, beta=beta)
 
+        # Blur
         if random.random() < 0.3:
             temp = cv2.GaussianBlur(temp, (5, 5), 0)
 
+        # Noise
         if random.random() < 0.2:
             noise = np.random.normal(0, 5, temp.shape).astype(np.int16)
             temp = temp.astype(np.int16) + noise
             temp = np.clip(temp, 0, 255).astype(np.uint8)
 
+        # 3D rotation with restricted angles
         if random.random() < 0.5:
             angle_x = random.uniform(-10, 10)
             angle_y = random.uniform(-10, 10)
             angle_z = random.uniform(-10, 10)
             temp = rotate_image_3d(temp, angle_x, angle_y, angle_z)
 
+        # 2D rotation with restricted angles
         if random.random() < 0.5:
             temp = rotate_2d(temp)
 
+        # Random cropping
         if random.random() < 0.4:
             temp = random_crop(temp)
 
+        # Saturation adjustment
         if random.random() < 0.3:
             hsv = cv2.cvtColor(temp, cv2.COLOR_BGR2HSV).astype(np.float32)
             hsv[..., 1] *= random.uniform(0.85, 1.15)
             hsv[..., 1] = np.clip(hsv[..., 1], 0, 255)
             temp = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
+        # Perspective Transform
         if random.random() < 0.3:
             h, w = temp.shape[:2]
             shift = random.randint(5, 20)
@@ -154,9 +162,11 @@ def apply_random_filters(img, num_variants=10):
             matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
             temp = cv2.warpPerspective(temp, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
 
+        # Color jitter
         if random.random() < 0.4:
             temp = color_jitter(temp)
 
+        # Sharpening
         if random.random() < 0.3:
             temp = sharpen_image(temp)
 
@@ -185,101 +195,66 @@ def process_single_image(args):
     except Exception as e:
         return f"Error processing {img_path}: {e}"
 
+def zip_folder(folder_path):
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                full_path = os.path.join(root, file)
+                relative_path = os.path.relpath(full_path, folder_path)
+                zipf.write(full_path, arcname=relative_path)
+    memory_file.seek(0)
+    return memory_file
+
 def main():
     st.title("Image Augmentation with Random Filters")
 
-    st.markdown("""
-    Upload or specify folders for:
-    - Optional reference images (used for combined processing)
-    - Client images (required)
-    - Output folder (where augmented images will be saved)
-    """)
+    reference_folder = st.text_input("Reference Image Folder Path (Optional, must exist)")
+    client_folder = st.text_input("Client Image Folder Path (Required, must exist)")
+    output_folder = st.text_input("Output Folder Path (Must exist and writable)")
 
-    # Inputs for folders
-    st.write("**Note:** Streamlit does not support selecting folders directly.")
-    st.write("You can upload images or specify absolute paths for local runs.")
-
-    # Upload multiple reference images (optional)
-    ref_files = st.file_uploader("Upload Reference Images (Optional)", type=['jpg','jpeg','png'], accept_multiple_files=True)
-
-    # Upload multiple client images (required)
-    client_files = st.file_uploader("Upload Client Images", type=['jpg','jpeg','png'], accept_multiple_files=True)
-
-    # Input output folder path (must be accessible)
-    output_folder = st.text_input("Output Folder Path (must exist and writable)")
-
-    if st.button("Start Augmentation"):
-
-        if not client_files:
-            st.error("Please upload client images.")
+    if st.button("Process Images"):
+        # Basic validation
+        if not client_folder or not os.path.isdir(client_folder):
+            st.error("Client Image Folder path is invalid or not selected.")
             return
-        if not output_folder:
-            st.error("Please specify output folder path.")
+        if not output_folder or not os.path.isdir(output_folder):
+            st.error("Output Folder path is invalid or not selected.")
             return
-        if not os.path.exists(output_folder):
-            st.error("Output folder does not exist.")
+        if reference_folder and not os.path.isdir(reference_folder):
+            st.warning("Reference folder path invalid or empty, continuing without it.")
+
+        # Get all images in client folder
+        client_images = [os.path.join(client_folder, f) for f in os.listdir(client_folder)
+                         if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+
+        if not client_images:
+            st.warning("No images found in client folder.")
             return
 
-        # Save uploaded reference images temporarily
-        reference_images = []
-        if ref_files:
-            ref_dir = os.path.join(output_folder, "ref_tmp")
-            os.makedirs(ref_dir, exist_ok=True)
-            for idx, f in enumerate(ref_files):
-                save_path = os.path.join(ref_dir, f"ref_{idx}_{f.name}")
-                with open(save_path, "wb") as out_f:
-                    out_f.write(f.getbuffer())
-                reference_images.append(save_path)
+        # Processing params
+        num_variants_per_image = 10
+        st.info(f"Processing {len(client_images)} images with {num_variants_per_image} variants each...")
 
-        # Save uploaded client images temporarily
-        client_images = []
-        client_dir = os.path.join(output_folder, "client_tmp")
-        os.makedirs(client_dir, exist_ok=True)
-        for idx, f in enumerate(client_files):
-            save_path = os.path.join(client_dir, f"client_{idx}_{f.name}")
-            with open(save_path, "wb") as out_f:
-                out_f.write(f.getbuffer())
-            client_images.append(save_path)
+        # Use multiprocessing for speed
+        pool = Pool(cpu_count())
+        args_list = [(img_path, output_folder, f"img{i}", num_variants_per_image) for i, img_path in enumerate(client_images)]
 
-        num_variants = 10 if not reference_images else 5
-        tasks = []
+        results = list(tqdm(pool.imap(process_single_image, args_list), total=len(args_list)))
+        pool.close()
+        pool.join()
 
-        if not reference_images:
-            st.warning("⚠ No reference images found, applying filters directly to client images...")
-            for idx, c_path in enumerate(client_images):
-                prefix = f"filtered_{idx}"
-                tasks.append((c_path, output_folder, prefix, num_variants))
-        else:
-            st.info(f"Processing {len(client_images)} client images with {len(reference_images)} reference images...")
-            for r_idx, r_path in enumerate(reference_images):
-                for c_idx, c_path in enumerate(client_images):
-                    prefix = f"ref{r_idx}_client{c_idx}"
-                    tasks.append((c_path, output_folder, prefix, 5))
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        # Multiprocessing can be tricky on some Streamlit deployments; you can run serially if issues arise.
-        try:
-            with Pool(cpu_count()) as pool:
-                results = []
-                for i, res in enumerate(pool.imap_unordered(process_single_image, tasks)):
-                    results.append(res)
-                    progress_bar.progress((i + 1) / len(tasks))
-                    status_text.text(res)
-        except Exception as e:
-            st.error(f"Multiprocessing error: {e}\nTrying sequential processing...")
-            results = []
-            for i, task in enumerate(tasks):
-                res = process_single_image(task)
-                results.append(res)
-                progress_bar.progress((i + 1) / len(tasks))
-                status_text.text(res)
-
-        st.success("Image augmentation completed!")
-        st.write("Summary of processing:")
         for r in results:
             st.write(r)
+
+        # After processing, zip output folder and provide download button
+        zip_data = zip_folder(output_folder)
+        st.download_button(
+            label="Download All Processed Images (ZIP)",
+            data=zip_data,
+            file_name="processed_images.zip",
+            mime="application/zip"
+        )
 
 if __name__ == "__main__":
     main()
