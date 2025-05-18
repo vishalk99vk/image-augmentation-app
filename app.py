@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import torch
 from torchvision import transforms
 from torchvision.models import vgg19
+from PIL import Image
 
 # Load VGG features once for style transfer
 @st.cache_resource
@@ -21,21 +22,23 @@ def load_vgg():
 
 def image_to_tensor(img):
     transform = transforms.Compose([
-        transforms.ToTensor(),
         transforms.Resize((256, 256)),
+        transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
     ])
+    # img should be PIL Image here
     return transform(img).unsqueeze(0)
 
 def tensor_to_image(tensor):
-    unloader = transforms.Compose([
-        transforms.Normalize(mean=[-2.12, -2.04, -1.80],
-                             std=[4.37, 4.46, 4.44]),
-        transforms.ToPILImage()
-    ])
-    tensor = tensor.cpu().clone().squeeze(0)
-    return np.array(unloader(tensor))
+    # Undo normalization and convert to numpy image
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1)
+    tensor = tensor.squeeze(0).cpu()
+    tensor = tensor * std + mean
+    tensor = torch.clamp(tensor, 0, 1)
+    img = transforms.ToPILImage()(tensor)
+    return np.array(img)
 
 # Adaptive Instance Normalization
 def adaptive_instance_normalization(content_feat, style_feat):
@@ -66,7 +69,7 @@ def apply_style_transfer(content_img, style_img, alpha=1.0):
 
     return tensor_to_image(t)
 
-# Augmentation functions
+# Augmentation functions (unchanged)
 def rotate_image_3d(img, angle_x=0, angle_y=0, angle_z=0):
     h, w = img.shape[:2]
     ax, ay, az = math.radians(angle_x), math.radians(angle_y), math.radians(angle_z)
@@ -166,16 +169,21 @@ if uploaded_files and st.button("Start Augmentation"):
             for i in range(num_variants):
                 if style_mode == "📱 Mobile Simulation":
                     augmented = apply_random_filters(img)
-                elif style_mode == "🎨 Style Transfer (From Reference Image)" and reference_image:
-                    reference_image.seek(0)  # Reset pointer for repeated reads
+                elif style_mode == "🎨 Style Transfer (From Reference Image)":
+                    if not reference_image:
+                        st.error("Please upload a reference image for style transfer.")
+                        break
+                    # Reset the pointer for each variant before reading
+                    reference_image.seek(0)
                     ref_bytes = np.asarray(bytearray(reference_image.read()), dtype=np.uint8)
                     style_img = cv2.imdecode(ref_bytes, cv2.IMREAD_COLOR)
-                    content_pil = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    style_pil = cv2.cvtColor(style_img, cv2.COLOR_BGR2RGB)
+                    # Convert BGR to RGB and to PIL images
+                    content_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                    style_pil = Image.fromarray(cv2.cvtColor(style_img, cv2.COLOR_BGR2RGB))
                     augmented = apply_style_transfer(content_pil, style_pil)
                     augmented = cv2.cvtColor(augmented, cv2.COLOR_RGB2BGR)
                 else:
-                    st.error("Please upload a reference image.")
+                    st.error("Unknown augmentation type.")
                     break
 
                 out_path = os.path.join(output_folder, f"{base_name}_aug_{i}.jpg")
